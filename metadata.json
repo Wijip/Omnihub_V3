@@ -1,0 +1,9 @@
+{
+  "name": "Remix Remix Omnihub_Reporting",
+  "description": "Remixing Omnihub Reporting",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
