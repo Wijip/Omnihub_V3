@@ -730,106 +730,111 @@ async function initializeDatabase(retryCount = 0) {
 setTimeout(() => initializeDatabase(), 1000);
 // ---------------------------------------------------
 
-function streamFileToResponse(req: any, res: any, filePath: string, fileName: string, isOmni: boolean) {
+async function streamFileToResponse(req: any, res: any, filePath: string, fileName: string, isOmni: boolean) {
   if (fileName.endsWith('.jpg') || fileName.endsWith('.jpeg')) res.setHeader('Content-Type', 'image/jpeg');
   else if (fileName.endsWith('.mp4')) res.setHeader('Content-Type', 'video/mp4');
 
-  const stat = fs.statSync(filePath);
-  const fileSize = stat.size;
-  const range = req.headers.range;
+  try {
+    const stat = await fs.promises.stat(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
 
-  if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunksize = (end - start) + 1;
-    
-    res.writeHead(206, {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': chunksize,
-    });
-    
-    if (isOmni) {
-      const stream = createRestoredStream(filePath, start, end);
-      stream.pipe(res);
-      req.on('close', () => stream.destroy());
-    } else {
-      const stream = fs.createReadStream(filePath, { start, end });
-      stream.on('error', (err) => {
-        console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
-        if (!res.headersSent) res.status(500).end();
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+      
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
       });
-      stream.pipe(res);
-      req.on('close', () => stream.destroy());
-    }
-  } else {
-    res.writeHead(200, { 'Content-Length': fileSize, 'Accept-Ranges': 'bytes' });
-    if (isOmni) {
-      const stream = createRestoredStream(filePath);
-      stream.pipe(res);
-      req.on('close', () => stream.destroy());
+      
+      if (isOmni) {
+        const stream = createRestoredStream(filePath, start, end);
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
+      } else {
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.on('error', (err) => {
+          console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
+          if (!res.headersSent) res.status(500).end();
+        });
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
+      }
     } else {
-      const stream = fs.createReadStream(filePath);
-      stream.on('error', (err) => {
-        console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
-        if (!res.headersSent) res.status(500).end();
-      });
-      stream.pipe(res);
-      req.on('close', () => stream.destroy());
+      res.writeHead(200, { 'Content-Length': fileSize, 'Accept-Ranges': 'bytes' });
+      if (isOmni) {
+        const stream = createRestoredStream(filePath);
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
+      } else {
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', (err) => {
+          console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
+          if (!res.headersSent) res.status(500).end();
+        });
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
+      }
     }
+  } catch (err: any) {
+    console.error(`[STREAM FAIL] Gagal membaca file: ${err.message}`);
+    if (!res.headersSent) res.status(404).send('Not Found');
   }
 }
 
 // --- Binar Read/Restore Endpoint ---
-app.get('/processed/:id/:filename', (req: any, res: any) => {
+app.get('/processed/:id/:filename', async (req: any, res: any) => {
   const fileId = req.params.id;
   const fileName = req.params.filename;
   // If it's a legacy actual .mp4/.jpg, serve it normally
   const normalPath = path.join(PROCESSED_DIR, fileId, fileName);
   const omniPath = path.join(PROCESSED_DIR, fileId, fileName + '.omni');
   
-  if (fs.existsSync(omniPath)) {
-     streamFileToResponse(req, res, omniPath, fileName, true);
-  } else if (fs.existsSync(normalPath)) {
-     streamFileToResponse(req, res, normalPath, fileName, false);
+  if (await fs.promises.access(omniPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, omniPath, fileName, true);
+  } else if (await fs.promises.access(normalPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, normalPath, fileName, false);
   } else {
      // Check if it's right in the processed directory itself (e.g. legacy)
      const directNormal = path.join(PROCESSED_DIR, fileId);
      const directOmni = path.join(PROCESSED_DIR, fileId + '.omni');
-     if (fs.existsSync(directOmni)) {
-         streamFileToResponse(req, res, directOmni, fileName, true);
-     } else if (fs.existsSync(directNormal)) {
-         streamFileToResponse(req, res, directNormal, fileName, false);
+     if (await fs.promises.access(directOmni).then(() => true).catch(() => false)) {
+         await streamFileToResponse(req, res, directOmni, fileName, true);
+     } else if (await fs.promises.access(directNormal).then(() => true).catch(() => false)) {
+         await streamFileToResponse(req, res, directNormal, fileName, false);
      } else {
          res.status(404).send('Not Found');
      }
   }
 });
 
-app.get('/thumbnails/:filename', (req: any, res: any) => {
+app.get('/thumbnails/:filename', async (req: any, res: any) => {
   const fileName = req.params.filename;
   const normalPath = path.join(THUMBNAIL_DIR, fileName);
   const omniPath = path.join(THUMBNAIL_DIR, fileName + '.omni');
   
-  if (fs.existsSync(omniPath)) {
-     streamFileToResponse(req, res, omniPath, fileName, true);
-  } else if (fs.existsSync(normalPath)) {
-     streamFileToResponse(req, res, normalPath, fileName, false);
+  if (await fs.promises.access(omniPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, omniPath, fileName, true);
+  } else if (await fs.promises.access(normalPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, normalPath, fileName, false);
   } else {
      res.status(404).send('Not Found');
   }
 });
 
-app.get('/uploads/:filename', (req: any, res: any) => {
+app.get('/uploads/:filename', async (req: any, res: any) => {
   const fileName = req.params.filename;
   const normalPath = path.join(UPLOAD_DIR, fileName);
   const omniPath = path.join(UPLOAD_DIR, fileName + '.omni');
   
-  if (fs.existsSync(omniPath)) {
-     streamFileToResponse(req, res, omniPath, fileName, true);
-  } else if (fs.existsSync(normalPath)) {
-     streamFileToResponse(req, res, normalPath, fileName, false);
+  if (await fs.promises.access(omniPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, omniPath, fileName, true);
+  } else if (await fs.promises.access(normalPath).then(() => true).catch(() => false)) {
+     await streamFileToResponse(req, res, normalPath, fileName, false);
   } else {
      res.status(404).send('Not Found');
   }
@@ -1041,8 +1046,14 @@ function processVideo(videoId: number, inputPath: string, originalFilename: stri
             resolveThumb();
             return;
         }
-        ffmpeg(activeInputPath)
+        const thumbCommand = ffmpeg(activeInputPath);
+        if (uploadId) activeFFmpegProcesses.set(uploadId, thumbCommand);
+        activeFFmpegProcesses.set(String(videoId), thumbCommand);
+
+        thumbCommand
           .on('end', () => {
+            if (uploadId) activeFFmpegProcesses.delete(uploadId);
+            activeFFmpegProcesses.delete(String(videoId));
             console.log(`[SYSTEM] Generated thumbnail for VideoID: ${videoId}`);
             const omniThumb = absoluteThumbPath + '.omni';
             fs.renameSync(absoluteThumbPath, omniThumb);
@@ -1050,6 +1061,8 @@ function processVideo(videoId: number, inputPath: string, originalFilename: stri
             resolveThumb();
           })
           .on('error', (err) => {
+            if (uploadId) activeFFmpegProcesses.delete(uploadId);
+            activeFFmpegProcesses.delete(String(videoId));
             console.error(`[SYSTEM] Thumbnail generation failed:`, err);
             resolveThumb();
           })
@@ -2029,17 +2042,30 @@ app.post('/api/video/abort-processing', async (req, res) => {
     if (activeFFmpegProcesses.has(uploadId)) {
       const proc = activeFFmpegProcesses.get(uploadId);
       try {
-        // STAGE 1.30: OS-Aware Process Termination (Prevent Zombie FFmpeg)
-        if (os.platform() === 'win32') {
-          execSync(`taskkill /PID ${proc.pid} /T /F`, { stdio: 'ignore' });
-        } else {
-          // Send SIGKILL to the entire process group (Linux/Mac)
-          process.kill(-proc.pid, 'SIGKILL');
+        const pid = proc.pid || proc.ffmpegProc?.pid;
+        if (pid) {
+          // STAGE 1.30: OS-Aware Process Termination (Prevent Zombie FFmpeg)
+          if (os.platform() === 'win32') {
+            execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+          } else {
+            // Send SIGKILL to the entire process group (Linux/Mac)
+            process.kill(-pid, 'SIGKILL');
+          }
+          console.log(`[PROCESS KILLER] FFmpeg Process (PID: ${pid}) untuk ID ${uploadId} BERHASIL DIHENTIKAN PAKSA.`);
+        }
+
+        // Gracefully kill fluent-ffmpeg or ChildProcess instance if proc.kill exists
+        if (typeof proc.kill === 'function') {
+          proc.kill('SIGKILL');
         }
         console.log(`[PROCESS KILLER] FFmpeg Process untuk ID ${uploadId} BERHASIL DIHENTIKAN PAKSA (OS: ${os.platform()}).`);
       } catch (e) {
         // Fallback if strict group kill fails
-        try { proc.kill('SIGKILL'); } catch (fallbackErr) {}
+        try {
+          if (typeof proc?.kill === 'function') {
+            proc.kill('SIGKILL');
+          }
+        } catch (fallbackErr) {}
         console.error(`[PROCESS KILLER ERROR] Peringatan saat mematikan FFmpeg:`, e);
       }
       activeFFmpegProcesses.delete(uploadId);
@@ -2105,6 +2131,13 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), async (req: 
   console.log('[API CALL] ' + req.originalUrl);
   try {
     const { chunkIndex, totalChunks, fileName, uploadId, videoId } = req.body;
+    const lockKey = `${req.user.id}_${fileName}_${videoId}`;
+
+    // Establish lock check before merge validation logic
+    if (activeMerges.has(lockKey)) {
+      console.log(`[IDEMPOTENCY] Caught duplicate merge trigger for ${fileName}`);
+      return res.json({ status: 'waiting', message: 'Duplicate prevented' });
+    }
     
     const chunkPath = path.join(CHUNK_DIR, `${uploadId}_${chunkIndex}`);
     fs.renameSync(req.file.path, chunkPath);
@@ -2118,8 +2151,7 @@ app.post('/api/upload/chunk', authenticate, upload.single('chunk'), async (req: 
     }
 
     if (allUploaded) {
-      // Layer 2: Final Chunk Handoff Mem Lock
-      const lockKey = `${req.user.id}_${fileName}_${videoId}`;
+      // Move idempotency lock check to the VERY TOP of the if (allUploaded) block
       if (activeMerges.has(lockKey)) {
         console.log(`[IDEMPOTENCY] Caught duplicate merge trigger for ${fileName}`);
         return res.json({ status: 'waiting', message: 'Duplicate prevented' });
@@ -4019,11 +4051,12 @@ async function startServer() {
       // Perbaikan typo nama file: Menghapus huruf 'p' setelah parameter resolusi
       const filePath = path.join(process.cwd(), 'processed', `processed-${req.params.id}-${req.query.res}.mp4.omni`);
 
-      if (!fs.existsSync(filePath)) {
+      const fileExists = await fs.promises.access(filePath).then(() => true).catch(() => false);
+      if (!fileExists) {
         return res.status(404).send('File not found on disk');
       }
 
-      const stat = fs.statSync(filePath);
+      const stat = await fs.promises.stat(filePath);
       const fileSize = stat.size;
       const range = req.headers.range;
 
@@ -4032,7 +4065,6 @@ async function startServer() {
         const start = parseInt(parts[0], 10);
         const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
         const chunksize = (end - start) + 1;
-        const file = fs.createReadStream(filePath, { start, end });
         
         res.writeHead(206, {
           'Content-Range': `bytes ${start}-${end}/${fileSize}`,
@@ -4041,58 +4073,19 @@ async function startServer() {
           'Content-Type': 'video/mp4',
         });
 
-        let currentStreamOffset = start;
-        const deobfuscateStream = new Transform({
-          transform(chunk, encoding, callback) {
-            if (currentStreamOffset < 100) {
-              for (let i = 0; i < chunk.length; i++) {
-                if (currentStreamOffset < 100) {
-                  chunk[i] ^= 0xAF;
-                }
-                currentStreamOffset++;
-              }
-            } else {
-              currentStreamOffset += chunk.length;
-            }
-            this.push(chunk);
-            callback();
-          }
-        });
-        
-        file.on('error', (err) => {
-          console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
-          if (!res.headersSent) res.status(500).end();
-        });
-        file.pipe(deobfuscateStream).pipe(res);
+        const stream = createRestoredStream(filePath, start, end);
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
       } else {
         res.writeHead(200, {
           'Content-Length': fileSize,
+          'Accept-Ranges': 'bytes',
           'Content-Type': 'video/mp4',
         });
         
-        let currentStreamOffset = 0;
-        const deobfuscateStream = new Transform({
-          transform(chunk, encoding, callback) {
-            if (currentStreamOffset < 100) {
-              for (let i = 0; i < chunk.length; i++) {
-                if (currentStreamOffset < 100) {
-                  chunk[i] ^= 0xAF;
-                }
-                currentStreamOffset++;
-              }
-            } else {
-              currentStreamOffset += chunk.length;
-            }
-            this.push(chunk);
-            callback();
-          }
-        });
-        const fullStream = fs.createReadStream(filePath);
-        fullStream.on('error', (err) => {
-          console.error(`[STREAM FAIL] Gagal membaca target video: ${err.message}`);
-          if (!res.headersSent) res.status(500).end();
-        });
-        fullStream.pipe(deobfuscateStream).pipe(res);
+        const stream = createRestoredStream(filePath);
+        stream.pipe(res);
+        req.on('close', () => stream.destroy());
       }
     } catch (err) {
       console.error('[STREAM ERROR]', err);
@@ -4106,11 +4099,12 @@ async function startServer() {
       const resParam = req.query.res || '360';
       const filePath = path.join(process.cwd(), 'processed', `processed-${req.params.id}-${resParam}.mp4.omni`);
 
-      if (!fs.existsSync(filePath)) {
+      const fileExists = await fs.promises.access(filePath).then(() => true).catch(() => false);
+      if (!fileExists) {
         return res.status(404).json({ error: 'Video file not found' });
       }
 
-      const stat = fs.statSync(filePath);
+      const stat = await fs.promises.stat(filePath);
       const fileSize = stat.size;
 
       // Ambil judul asli dari database
